@@ -18,6 +18,7 @@ import { requestExternalJobOperation, serviceExternalJobBridgeRequests } from ".
 import { isActiveAsyncState } from "../../src/runs/background/active-run-index.ts";
 import { readProcessTerminal } from "../../src/runs/background/process-terminal.ts";
 import { readStatus } from "../../src/shared/utils.ts";
+import { interruptRequestPath } from "../../src/runs/background/control-channel.ts";
 
 const routeRoots: string[] = [];
 const fanoutListenerCleanupKey = "__piSubagentFanoutChildNestedControlInboxCleanups";
@@ -165,6 +166,35 @@ describe("nested control routing", () => {
 			assert.match(text(result), /nested interrupt accepted/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	for (const missingRoute of [true, false]) it(missingRoute
+		? "interrupts an authorized nested async child when its owner has no foreground route"
+		: "preserves an owner refusal instead of interrupting its nested async child", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-async-interrupt-"));
+		const runId = `nested-background-${randomUUID()}`;
+		const asyncDir = path.join(TEMP_ROOT_DIR, "nested-subagent-runs", "root-control", runId);
+		try {
+			const route = createNestedRun(runId, "running", { mode: "single", asyncDir, pid: process.pid });
+			fs.mkdirSync(asyncDir, { recursive: true });
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+				runId, state: "running", mode: "single", pid: process.pid, lastUpdate: Date.now(),
+				steps: [{ agent: "worker", status: "running" }],
+			}));
+			const executor = createExecutor(stateWithNestedRoute(route));
+			const pending = executor.execute("interrupt", { action: "interrupt", id: runId }, new AbortController().signal, undefined, ctx(root));
+			await waitFor(() => readNestedControlRequests(route).length > 0);
+			const request = readNestedControlRequests(route)[0]!;
+			writeNestedControlResult(route, { ts: Date.now(), requestId: request.requestId, targetRunId: runId,
+				ok: false, message: missingRoute ? `Nested run ${runId} is not active in this fanout child.` : "Owner refuses this interrupt." });
+			const result = await pending;
+			assert.equal(result.isError, missingRoute ? undefined : true);
+			assert.equal(fs.existsSync(interruptRequestPath(asyncDir)), missingRoute);
+			assert.match(text(result), missingRoute ? /Interrupt requested for nested async run/ : /Owner refuses this interrupt/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(asyncDir, { recursive: true, force: true });
 		}
 	});
 
