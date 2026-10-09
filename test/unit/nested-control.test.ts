@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import registerFanoutChildSubagentExtension from "../../src/extension/fanout-child.ts";
 import { createSubagentExecutor, readNestedRecoveryDescriptor } from "../../src/runs/foreground/subagent-executor.ts";
-import { createNestedRoute, findNestedControlResult, nestedResultsPath, projectNestedEvents, readNestedControlRequests, readNestedControlResults, snapshotNestedEventFiles, writeNestedControlRequest, writeNestedControlResult, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
+import { createNestedRoute, findNestedControlResult, nestedResultsPath, nestedRunNotActiveMessage, projectNestedEvents, readNestedControlRequests, readNestedControlResults, snapshotNestedEventFiles, writeNestedControlRequest, writeNestedControlResult, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import type { ChildRuntimeConfig } from "../../src/runs/shared/child-runtime-config.ts";
 import { ASYNC_DIR, RESULTS_DIR, TEMP_ROOT_DIR, type SubagentState } from "../../src/shared/types.ts";
 import { createRunFanoutBudget } from "../../src/runs/shared/run-fanout-budget.ts";
@@ -187,7 +187,7 @@ describe("nested control routing", () => {
 			await waitFor(() => readNestedControlRequests(route).length > 0);
 			const request = readNestedControlRequests(route)[0]!;
 			writeNestedControlResult(route, { ts: Date.now(), requestId: request.requestId, targetRunId: runId,
-				ok: false, message: missingRoute ? `Nested run ${runId} is not active in this fanout child.` : "Owner refuses this interrupt." });
+				ok: false, message: missingRoute ? nestedRunNotActiveMessage(runId) : "Owner refuses this interrupt." });
 			const result = await pending;
 			assert.equal(result.isError, missingRoute ? undefined : true);
 			assert.equal(fs.existsSync(interruptRequestPath(asyncDir)), missingRoute);
@@ -195,6 +195,24 @@ describe("nested control routing", () => {
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 			fs.rmSync(asyncDir, { recursive: true, force: true });
+		}
+	});
+
+	it("reports the owner's missing-route answer for a nested foreground run that has no async inbox", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-foreground-interrupt-"));
+		const runId = `nested-foreground-${randomUUID()}`;
+		try {
+			const route = createNestedRun(runId);
+			const executor = createExecutor(stateWithNestedRoute(route));
+			const pending = executor.execute("interrupt", { action: "interrupt", id: runId }, new AbortController().signal, undefined, ctx(root));
+			await waitFor(() => readNestedControlRequests(route).length > 0);
+			const request = readNestedControlRequests(route)[0]!;
+			writeNestedControlResult(route, { ts: Date.now(), requestId: request.requestId, targetRunId: runId, ok: false, message: nestedRunNotActiveMessage(runId) });
+			const result = await pending;
+			assert.equal(result.isError, true);
+			assert.equal(text(result), nestedRunNotActiveMessage(runId));
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
 
